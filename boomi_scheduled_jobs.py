@@ -414,7 +414,7 @@ def create_recurring_tab(recurring_jobs):
           </td>
           <td style="padding:6px 10px">
             <div class="tt-wrap" data-tip="{tooltip}">
-              <div style="position:relative">{sparkline}
+              <div style="position:relative;width:100%">{sparkline}
                 <div style="position:relative;height:12px">{hour_labels_html}</div>
               </div>
             </div>
@@ -432,7 +432,7 @@ def create_recurring_tab(recurring_jobs):
       .rec-table tbody tr:hover td {{ background:#e8f0fe }}
 
       /* CSS tooltip */
-      .tt-wrap {{ position:relative;display:flex;align-items:center }}
+      .tt-wrap {{ position:relative;display:flex;align-items:center;width:100% }}
       .tt-wrap::after {{
         content: attr(data-tip);
         position:absolute; bottom:calc(100% + 6px); left:0;
@@ -507,7 +507,7 @@ def getJobs(atomId, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "2.3"
+VERSION = "2.4"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")

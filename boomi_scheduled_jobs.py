@@ -107,11 +107,13 @@ def show_job_statistics(df):
 
 def _is_fullday_row(row):
     """Return True if a recurring row covers the full 24h window."""
-    if row["type"] == "discrete":
+    if row.get("kind") != "recurring":
         return False
-    windows = row["windows"]
+    if row.get("type") == "discrete":
+        return False
+    windows = row.get("windows", [])
     total_span = sum(e - s for s, e in windows)
-    return total_span >= 22  # close enough to 24h
+    return total_span >= 22
 
 
 def _build_single_rows(scheduled_jobs):
@@ -235,20 +237,58 @@ def _tooltip_for_row(row):
     return f"Runs at: {', '.join(time_labels)}"
 
 
+def _row_active_in_hour(row, hour):
+    """Return True if this row has any activity during the given hour (0-23)."""
+    if _is_fullday_row(row):
+        return True
+    if row["kind"] == "single":
+        return any(h == hour for h, m in row["mst_times"])
+    if row["type"] == "discrete":
+        return any(int(t) % 24 == hour for t in row["discrete_times"])
+    # continuous windowed — check if any window overlaps [hour, hour+1)
+    for start_f, end_f in row["windows"]:
+        if start_f < hour + 1 and end_f > hour:
+            return True
+    return False
+
+
 def create_combined_tab(scheduled_jobs, recurring_jobs):
-    st.caption("All times in Mountain Standard Time (MST)")
+    caption_placeholder = st.empty()
 
     single_rows = _build_single_rows(scheduled_jobs)
     recurring_rows = _build_recurring_rows(recurring_jobs)
 
     fullday = [r for r in recurring_rows if _is_fullday_row(r)]
     windowed = [r for r in recurring_rows if not _is_fullday_row(r)]
-
-    # Interleave singles + windowed recurring by sort_key
     interleaved = sorted(single_rows + windowed, key=lambda r: r["sort_key"])
 
-    _render_job_table(interleaved + fullday, _sparkline_for_row, _tooltip_for_row,
-                      divider_before=len(interleaved) if fullday else None)
+    # 26-stop time slider — same as Single Jobs tab
+    _fmt = ["All","12A","1A","2A","3A","4A","5A","6A","7A","8A","9A","10A","11A",
+            "12P","1P","2P","3P","4P","5P","6P","7P","8P","9P","10P","11P","12A"]
+    selected = st.select_slider(
+        "Jump to hour", options=list(range(26)), value=0,
+        format_func=lambda i: _fmt[i], label_visibility="collapsed", key="slider_combined",
+    )
+
+    if selected != 0:
+        target = (selected - 1) % 24
+        end_label = _fmt[(target + 1) % 24 + 1]
+        caption_placeholder.caption(f"All times in Mountain Standard Time (MST). Currently displaying {_fmt[target + 1]} – {end_label}")
+        filtered_interleaved = [r for r in interleaved if _row_active_in_hour(r, target)]
+        visible_rows = filtered_interleaved + fullday
+        if not visible_rows:
+            st.info(f"No jobs run at {_fmt[selected]}")
+            return
+        _render_job_table(
+            visible_rows, _sparkline_for_row, _tooltip_for_row,
+            divider_before=len(filtered_interleaved) if fullday else None,
+        )
+    else:
+        caption_placeholder.caption("All times in Mountain Standard Time (MST)")
+        _render_job_table(
+            interleaved + fullday, _sparkline_for_row, _tooltip_for_row,
+            divider_before=len(interleaved) if fullday else None,
+        )
 
 
 # ── shared table renderer ────────────────────────────────────────────────────
@@ -320,7 +360,8 @@ def create_single_jobs_tab(scheduled_jobs):
     if not scheduled_jobs:
         st.info("No scheduled jobs found")
         return
-    st.caption("All times in Mountain Standard Time (MST)")
+    caption_placeholder = st.empty()
+    caption_placeholder.caption("All times in Mountain Standard Time (MST)")
     rows = sorted(_build_single_rows(scheduled_jobs), key=lambda r: r["sort_key"])
 
     # 26-stop time filter slider
@@ -328,10 +369,12 @@ def create_single_jobs_tab(scheduled_jobs):
             "12P","1P","2P","3P","4P","5P","6P","7P","8P","9P","10P","11P","12A"]
     selected = st.select_slider(
         "Jump to hour", options=list(range(26)), value=0,
-        format_func=lambda i: _fmt[i], label_visibility="collapsed",
+        format_func=lambda i: _fmt[i], label_visibility="collapsed", key="slider_single",
     )
-    if selected not in (0, 25):
-        target = selected - 1
+    if selected != 0:
+        target = (selected - 1) % 24
+        end_label = _fmt[(target + 1) % 24 + 1]
+        caption_placeholder.caption(f"All times in Mountain Standard Time (MST). Currently displaying {_fmt[target + 1]} – {end_label}")
         rows = [r for r in rows if any(h == target for h, m in r["mst_times"])]
         if not rows:
             st.info(f"No jobs run at {_fmt[selected]}")
@@ -503,7 +546,7 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "3.6"
+VERSION = "4.2"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")

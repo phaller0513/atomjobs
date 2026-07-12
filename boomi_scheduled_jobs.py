@@ -544,7 +544,7 @@ def renderJobs(df, label):
 
     recurring_jobs, scheduled_jobs = categorize_jobs(df)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["All Jobs", "Single Jobs", "Recurring Jobs", "Table"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["All Jobs", "Single Jobs", "Recurring Jobs", "Table", "Refresh Data"])
 
     with tab1:
         create_combined_tab(scheduled_jobs, recurring_jobs)
@@ -564,10 +564,16 @@ def renderJobs(df, label):
             height=600,
         )
 
+    with tab5:
+        if st.button("Reload Data", type="primary"):
+            clear_cache()
+            st.rerun()
+        st.caption('Or use "Clear Cache" from the ⋮ menu in the upper right.')
+
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "4.6"
+VERSION = "4.11"
 
 st.set_page_config(page_title="Boomi Job Scheduler", layout="wide")
 
@@ -621,10 +627,6 @@ with st.sidebar.expander("Help & Info"):
 
 Times shown in MST (UTC-7)
 """)
-
-if st.sidebar.button('↺', help="Clear cached API responses", key="clear_cache_btn"):
-    clear_cache()
-    st.sidebar.success("Cache cleared!")
 
 st.sidebar.markdown(f"""
 <div class="sidebar-footer">

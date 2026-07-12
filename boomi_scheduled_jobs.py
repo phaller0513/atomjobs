@@ -105,100 +105,155 @@ def show_job_statistics(df):
 
 # ── timeline tab ──────────────────────────────────────────────────────────────
 
-def create_timeline_tab(scheduled_jobs):
-    if not scheduled_jobs:
-        st.info("No scheduled jobs found")
-        return
+def _is_fullday_row(row):
+    """Return True if a recurring row covers the full 24h window."""
+    if row["type"] == "discrete":
+        return False
+    windows = row["windows"]
+    total_span = sum(e - s for s, e in windows)
+    return total_span >= 22  # close enough to 24h
 
+
+def _build_single_rows(scheduled_jobs):
+    """Build table rows for single (non-recurring) jobs."""
+    rows = []
+    for job in scheduled_jobs:
+        times = parse_job_schedule(job)
+        mst_times = sorted(convert_utc_to_mst(h, m) for h, m in times)
+        if not mst_times:
+            continue
+        first_h, first_m = mst_times[0]
+        rows.append({
+            "name": job["Name"],
+            "enabled": is_job_enabled(job),
+            "kind": "single",
+            "mst_times": mst_times,
+            "time_labels": [format_time_12hour(h, m) for h, m in mst_times],
+            "sort_key": first_h + first_m / 60,
+        })
+    return rows
+
+
+def _build_recurring_rows(recurring_jobs):
+    """Build merged table rows for recurring jobs (same logic as create_recurring_tab)."""
+    from collections import Counter
+    merged = {}
+    for job in recurring_jobs:
+        name = job['Name']
+        enabled = is_job_enabled(job)
+        hours_str = str(job.get('hours', '*'))
+        minutes_str = str(job.get('minutes', '0'))
+        is_freq = '/' in hours_str or '/' in minutes_str or str(hours_str) in ('*', '0-23')
+
+        if name not in merged:
+            merged[name] = {
+                "name": name, "windows": [], "interval": 60,
+                "enabled": enabled, "type": "continuous" if is_freq else "discrete",
+                "discrete_times": [], "kind": "recurring",
+            }
+        if is_freq:
+            windows, interval = parse_recurring_windows(job)
+            merged[name]["windows"].extend(windows)
+            merged[name]["interval"] = interval
+            merged[name]["type"] = "continuous"
+        else:
+            times = parse_job_schedule(job)
+            for utc_h, utc_m in times:
+                mst_h, mst_m = convert_utc_to_mst(utc_h, utc_m)
+                merged[name]["discrete_times"].append(mst_h + mst_m / 60)
+
+    rows = list(merged.values())
+    for r in rows:
+        if r["type"] == "continuous":
+            r["interval_label"] = f"every {r['interval']}min" if r["interval"] > 1 else "every min"
+            r["windows"].sort(key=lambda w: w[0])
+            r["first_start"] = r["windows"][0][0]
+        else:
+            r["discrete_times"].sort()
+            r["first_start"] = r["discrete_times"][0] if r["discrete_times"] else 0
+            r["interval_label"] = f"{len(r['discrete_times'])}x/day"
+        r["sort_key"] = r["first_start"]
+    return rows
+
+
+def _sparkline_for_row(row, vw=600, h=24):
+    """Unified sparkline covering both single and recurring row types."""
+    parts = []
+    mid = h // 2
+    for hr in range(0, 25, 6):
+        x = int(hr / 24 * vw)
+        parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+    for hr in [3, 9, 15, 21]:
+        x = int(hr / 24 * vw)
+        parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+    color = "#22c55e" if row["enabled"] else "#e34948"
+
+    if row["kind"] == "single":
+        for exec_h, exec_m in row["mst_times"]:
+            t = exec_h + exec_m / 60
+            x = int(t / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
+    elif row["type"] == "discrete":
+        for t in row["discrete_times"]:
+            x = int(t / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="{mid-7}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="3"/>')
+    else:
+        use_ekg = row["interval"] >= 10
+        for start_f, end_f in row["windows"]:
+            x1 = int(start_f / 24 * vw)
+            x2 = int(min(end_f, 24) / 24 * vw)
+            if not use_ekg:
+                bar_h = 6
+                parts.append(f'<rect x="{x1}" y="{mid - bar_h//2}" width="{max(4, x2-x1)}" height="{bar_h}" fill="{color}" rx="1"/>')
+            else:
+                parts.append(f'<line x1="{x1}" y1="{mid}" x2="{x2}" y2="{mid}" stroke="{color}" stroke-width="1" opacity="0.35"/>')
+                t = start_f
+                while t <= end_f + 1e-9:
+                    x = int(t / 24 * vw)
+                    parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
+                    t += row["interval"] / 60.0
+
+    return (
+        f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
+        f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
+        + "".join(parts) + "</svg>"
+    )
+
+
+def _tooltip_for_row(row):
+    if row["kind"] == "single":
+        return "Runs at: " + ", ".join(row["time_labels"])
+    if row["type"] == "continuous":
+        window_strs = []
+        for start_f, end_f in row["windows"]:
+            sh = int(start_f); sm = int(round((start_f - sh) * 60))
+            eh = int(end_f) % 24; em = int(round((end_f - int(end_f)) * 60))
+            window_strs.append(f"{format_time_12hour(sh % 24, sm)} – {format_time_12hour(eh, em)}")
+        total_execs = sum(max(1, int((e - s) * 60 / row["interval"]) + 1) for s, e in row["windows"])
+        return f"Window: {' | '.join(window_strs)} · {row['interval_label']} · ~{total_execs} executions/day"
+    time_labels = [format_time_12hour(int(t) % 24, int(round((t - int(t)) * 60))) for t in row["discrete_times"]]
+    return f"Runs at: {', '.join(time_labels)}"
+
+
+def create_combined_tab(scheduled_jobs, recurring_jobs):
     st.caption("All times in Mountain Standard Time (MST)")
 
-    # Build per-hour buckets (MST)
-    hour_buckets = defaultdict(list)   # hour → list of (minute, job)
-    for job in scheduled_jobs:
-        for utc_h, utc_m in parse_job_schedule(job):
-            mst_h, mst_m = convert_utc_to_mst(utc_h, utc_m)
-            hour_buckets[mst_h].append((mst_m, job))
+    single_rows = _build_single_rows(scheduled_jobs)
+    recurring_rows = _build_recurring_rows(recurring_jobs)
 
-    # ── density bar chart ────────────────────────────────────────────────────
-    hours_24 = list(range(24))
-    counts = [len(hour_buckets.get(h, [])) for h in hours_24]
+    fullday = [r for r in recurring_rows if _is_fullday_row(r)]
+    windowed = [r for r in recurring_rows if not _is_fullday_row(r)]
 
-    # Build hover text: list job names per hour
-    hover_texts = []
-    for h in hours_24:
-        items = hour_buckets.get(h, [])
-        if items:
-            names = sorted(set(j['Name'] for _, j in items))
-            label = f"<b>{format_time_12hour(h, 0).split(':')[0] + ('AM' if h < 12 else 'PM')}</b><br>"
-            label += "<br>".join(f"{'●' if is_job_enabled(j) else '○'} {j['Name']}" for _, j in items)
-        else:
-            label = f"<b>{format_time_12hour(h, 0).split(':')[0] + ('AM' if h < 12 else 'PM')}</b><br>No jobs"
-        hover_texts.append(label)
+    # Interleave singles + windowed recurring by sort_key
+    interleaved = sorted(single_rows + windowed, key=lambda r: r["sort_key"])
 
-    hour_labels = [format_time_12hour(h, 0).replace(":00 ", "") for h in hours_24]
-
-    fig = go.Figure(go.Bar(
-        x=hour_labels,
-        y=counts,
-        marker_color=[
-            "#2a78d6" if c > 0 else "#e2e8f0" for c in counts
-        ],
-        hovertemplate="%{customdata}<extra></extra>",
-        customdata=hover_texts,
-    ))
-    fig.update_layout(
-        title="Jobs per Hour",
-        xaxis_title=None,
-        yaxis_title="# Jobs",
-        height=260,
-        margin=dict(l=40, r=20, t=40, b=40),
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
-        bargap=0.15,
-        xaxis=dict(tickfont=dict(size=11, color="#1a1a1a")),
-        yaxis=dict(gridcolor="#f0f0f0", zeroline=False),
-        hoverlabel=dict(bgcolor="white", font_size=12, font_color="#1a1a1a"),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── hour-bucket expanders ────────────────────────────────────────────────
-    st.markdown("#### Jobs by Hour")
-
-    active_hours = sorted(h for h in hour_buckets if hour_buckets[h])
-
-    for h in active_hours:
-        items = sorted(hour_buckets[h], key=lambda x: x[0])  # sort by minute
-        label = format_time_12hour(h, 0).replace(":00 ", " ") + "xx"
-        n_enabled = sum(1 for _, j in items if is_job_enabled(j))
-        n_disabled = len(items) - n_enabled
-
-        status_pill = f"{n_enabled} enabled" if n_disabled == 0 else f"{n_enabled} on / {n_disabled} off"
-
-        with st.expander(f"**{format_time_12hour(h, 0).replace(':00', '')}** — {len(items)} job{'s' if len(items) != 1 else ''}   {status_pill}"):
-            # Group by exact minute within the hour
-            minute_groups = defaultdict(list)
-            for m, job in items:
-                minute_groups[m].append(job)
-
-            for m in sorted(minute_groups):
-                time_label = format_time_12hour(h, m)
-                jobs_at_minute = minute_groups[m]
-                cols = st.columns([1] + [3] * min(len(jobs_at_minute), 4))
-                cols[0].markdown(f"<span style='color:#888;font-size:0.85em'>{time_label}</span>", unsafe_allow_html=True)
-                for idx, job in enumerate(jobs_at_minute):
-                    color = "#22c55e" if is_job_enabled(job) else "#ef4444"
-                    dot = f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background:{color};vertical-align:middle;margin-right:4px'></span>"
-                    name = job['Name']
-                    col_idx = (idx % 4) + 1
-                    cols[col_idx].markdown(
-                        f"<span title='{name}' style='font-size:0.9em'>{dot}{name[:45]}{'…' if len(name) > 45 else ''}</span>",
-                        unsafe_allow_html=True
-                    )
+    _render_job_table(interleaved + fullday, _sparkline_for_row, _tooltip_for_row,
+                      divider_before=len(interleaved) if fullday else None)
 
 
 # ── shared table renderer ────────────────────────────────────────────────────
 
-def _render_job_table(rows, sparkline_fn, tooltip_fn):
+def _render_job_table(rows, sparkline_fn, tooltip_fn, divider_before=None):
     _hr_labels = {0:"12A", 3:"3A", 6:"6A", 9:"9A", 12:"12P", 15:"3P", 18:"6P", 21:"9P", 24:""}
     hour_labels_html = "".join(
         f'<span style="position:absolute;left:{int(h/24*100)}%;font-size:9px;color:#9ca3af;transform:translateX(-50%)">'
@@ -206,7 +261,9 @@ def _render_job_table(rows, sparkline_fn, tooltip_fn):
         for h in [0, 3, 6, 9, 12, 15, 18, 21]
     )
     rows_html = ""
-    for row in rows:
+    for idx, row in enumerate(rows):
+        if divider_before is not None and idx == divider_before:
+            rows_html += '<tr><td colspan="2" style="padding:6px 10px;color:#9ca3af;font-size:0.8em;font-style:italic;background:#ffffff;border-top:2px solid #e5e7eb">24-hour recurring jobs</td></tr>'
         dot_color = "#22c55e" if row["enabled"] else "#ef4444"
         dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};flex-shrink:0;margin-top:1px"></span>'
         tooltip = tooltip_fn(row).replace('"', '&quot;')
@@ -263,70 +320,24 @@ def create_single_jobs_tab(scheduled_jobs):
     if not scheduled_jobs:
         st.info("No scheduled jobs found")
         return
-
     st.caption("All times in Mountain Standard Time (MST)")
+    rows = sorted(_build_single_rows(scheduled_jobs), key=lambda r: r["sort_key"])
 
-    # Build one row per job, sorted by first MST execution time
-    rows = []
-    for job in scheduled_jobs:
-        times = parse_job_schedule(job)
-        mst_times = sorted(convert_utc_to_mst(h, m) for h, m in times)
-        if not mst_times:
-            continue
-        first_h, first_m = mst_times[0]
-        time_labels = [format_time_12hour(h, m) for h, m in mst_times]
-        rows.append({
-            "name": job["Name"],
-            "enabled": is_job_enabled(job),
-            "mst_times": mst_times,
-            "time_labels": time_labels,
-            "sort_key": first_h + first_m / 60,
-        })
-
-    rows.sort(key=lambda r: r["sort_key"])
-
-    # Time filter slider
-    # 26 stops: 0=All, 1–24=12A–11P, 25=12A (wraps back to All)
+    # 26-stop time filter slider
     _fmt = ["All","12A","1A","2A","3A","4A","5A","6A","7A","8A","9A","10A","11A",
             "12P","1P","2P","3P","4P","5P","6P","7P","8P","9P","10P","11P","12A"]
     selected = st.select_slider(
-        "Jump to hour",
-        options=list(range(26)),
-        value=0,
-        format_func=lambda i: _fmt[i],
-        label_visibility="collapsed",
+        "Jump to hour", options=list(range(26)), value=0,
+        format_func=lambda i: _fmt[i], label_visibility="collapsed",
     )
     if selected not in (0, 25):
-        target = selected - 1  # index 1→hour 0, index 2→hour 1, … index 24→hour 23
+        target = selected - 1
         rows = [r for r in rows if any(h == target for h, m in r["mst_times"])]
         if not rows:
             st.info(f"No jobs run at {_fmt[selected]}")
             return
 
-    def _sparkline(row, vw=600, h=24):
-        mid = h // 2
-        parts = []
-        for hr in range(0, 25, 6):
-            x = int(hr / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
-        for hr in [3, 9, 15, 21]:
-            x = int(hr / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
-        color = "#22c55e" if row["enabled"] else "#e34948"
-        for exec_h, exec_m in row["mst_times"]:
-            t = exec_h + exec_m / 60
-            x = int(t / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
-        return (
-            f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
-            f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
-            + "".join(parts) + "</svg>"
-        )
-
-    def _tooltip(row):
-        return "Runs at: " + ", ".join(row["time_labels"])
-
-    _render_job_table(rows, _sparkline, _tooltip)
+    _render_job_table(rows, _sparkline_for_row, _tooltip_for_row)
 
 
 # ── recurring tab ─────────────────────────────────────────────────────────────
@@ -434,119 +445,10 @@ def create_recurring_tab(recurring_jobs):
     if not recurring_jobs:
         st.info("No recurring jobs found")
         return
-
     st.caption("All times in Mountain Standard Time (MST). Each spike marks an execution.")
-
-    # Group by name.
-    # Multi-instance jobs (same name, different UTC hours) get type="discrete" —
-    # each instance contributes one spike at its exact time, no continuous baseline.
-    # Frequency-based jobs (/ in hours/minutes) get type="continuous".
-    from collections import Counter
-    name_counts = Counter(j['Name'] for j in recurring_jobs)
-
-    merged = {}
-    for job in recurring_jobs:
-        name = job['Name']
-        enabled = is_job_enabled(job)
-        hours_str = str(job.get('hours', '*'))
-        minutes_str = str(job.get('minutes', '0'))
-        is_freq = '/' in hours_str or '/' in minutes_str or str(hours_str) in ('*', '0-23')
-
-        if name not in merged:
-            job_type = "continuous" if is_freq else "discrete"
-            merged[name] = {
-                "name": name, "windows": [], "interval": 60,
-                "enabled": enabled, "type": job_type,
-                "discrete_times": [],
-            }
-
-        if is_freq:
-            windows, interval = parse_recurring_windows(job)
-            merged[name]["windows"].extend(windows)
-            merged[name]["interval"] = interval
-            merged[name]["type"] = "continuous"
-        else:
-            # Single scheduled instance — record its exact MST time as a spike point
-            times = parse_job_schedule(job)
-            for utc_h, utc_m in times:
-                mst_h, mst_m = convert_utc_to_mst(utc_h, utc_m)
-                merged[name]["discrete_times"].append(mst_h + mst_m / 60)
-
-    rows = list(merged.values())
-    for r in rows:
-        if r["type"] == "continuous":
-            r["interval_label"] = f"every {r['interval']}min" if r["interval"] > 1 else "every min"
-            r["windows"].sort(key=lambda w: w[0])
-            r["first_start"] = r["windows"][0][0]
-        else:
-            r["discrete_times"].sort()
-            r["first_start"] = r["discrete_times"][0] if r["discrete_times"] else 0
-            r["interval_label"] = f"{len(r['discrete_times'])}x/day"
-
+    rows = _build_recurring_rows(recurring_jobs)
     rows.sort(key=lambda r: (not r["enabled"], r["first_start"]))
-
-    def _sparkline_svg(row, vw=600, h=24):
-        """Inline SVG using viewBox so it stretches to fill column width.
-        Dense jobs (interval < 10 min) get a solid bar; sparse get baseline+spikes."""
-        parts = []
-        mid = h // 2
-        for hr in range(0, 25, 6):
-            x = int(hr / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
-        for hr in [3, 9, 15, 21]:
-            x = int(hr / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
-        color = "#22c55e" if row["enabled"] else "#e34948"
-
-        if row["type"] == "discrete":
-            # Individual scheduled times — spike at each exact time
-            for t in row["discrete_times"]:
-                x = int(t / 24 * vw)
-                parts.append(f'<line x1="{x}" y1="{mid-7}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="3"/>')
-        else:
-            use_ekg = row["interval"] >= 10
-            for start_f, end_f in row["windows"]:
-                x1 = int(start_f / 24 * vw)
-                x2 = int(min(end_f, 24) / 24 * vw)
-                if not use_ekg:
-                    # Dense: solid filled bar
-                    bar_h = 6
-                    parts.append(f'<rect x="{x1}" y="{mid - bar_h//2}" width="{max(4, x2-x1)}" height="{bar_h}" fill="{color}" rx="1"/>')
-                else:
-                    # Sparse: thin faded baseline + vertical spike at each execution
-                    parts.append(f'<line x1="{x1}" y1="{mid}" x2="{x2}" y2="{mid}" stroke="{color}" stroke-width="1" opacity="0.35"/>')
-                    t = start_f
-                    while t <= end_f + 1e-9:
-                        x = int(t / 24 * vw)
-                        parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
-                        t += row["interval"] / 60.0
-
-        return (
-            f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
-            f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
-            + "".join(parts) + "</svg>"
-        )
-
-    def _tooltip_text(row):
-        if row["type"] == "continuous":
-            window_strs = []
-            for start_f, end_f in row["windows"]:
-                sh = int(start_f); sm = int(round((start_f - sh) * 60))
-                eh = int(end_f) % 24; em = int(round((end_f - int(end_f)) * 60))
-                window_strs.append(f"{format_time_12hour(sh % 24, sm)} – {format_time_12hour(eh, em)}")
-            total_execs = sum(
-                max(1, int((e - s) * 60 / row["interval"]) + 1)
-                for s, e in row["windows"]
-            )
-            return f"Window: {' | '.join(window_strs)} · {row['interval_label']} · ~{total_execs} executions/day"
-        else:
-            time_labels = [
-                format_time_12hour(int(t) % 24, int(round((t - int(t)) * 60)))
-                for t in row["discrete_times"]
-            ]
-            return f"Runs at: {', '.join(time_labels)}"
-
-    _render_job_table(rows, _sparkline_svg, _tooltip_text)
+    _render_job_table(rows, _sparkline_for_row, _tooltip_for_row)
 
 
 # ── main fetch + layout ───────────────────────────────────────────────────────
@@ -578,10 +480,10 @@ def renderJobs(df, label):
 
     recurring_jobs, scheduled_jobs = categorize_jobs(df)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Timeline", "📅 Single Jobs", "🔄 Recurring Jobs", "📋 Table"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 All Jobs", "📅 Single Jobs", "🔄 Recurring Jobs", "📋 Table"])
 
     with tab1:
-        create_timeline_tab(scheduled_jobs)
+        create_combined_tab(scheduled_jobs, recurring_jobs)
 
     with tab2:
         create_single_jobs_tab(scheduled_jobs)
@@ -601,7 +503,7 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "3.5"
+VERSION = "3.6"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")

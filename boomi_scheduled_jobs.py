@@ -196,6 +196,139 @@ def create_timeline_tab(scheduled_jobs):
                     )
 
 
+# ── shared table renderer ────────────────────────────────────────────────────
+
+def _render_job_table(rows, sparkline_fn, tooltip_fn):
+    _hr_labels = {0:"12A", 3:"3A", 6:"6A", 9:"9A", 12:"12P", 15:"3P", 18:"6P", 21:"9P", 24:""}
+    hour_labels_html = "".join(
+        f'<span style="position:absolute;left:{int(h/24*100)}%;font-size:9px;color:#9ca3af;transform:translateX(-50%)">'
+        f'{_hr_labels[h]}</span>'
+        for h in [0, 3, 6, 9, 12, 15, 18, 21]
+    )
+    rows_html = ""
+    for row in rows:
+        dot_color = "#22c55e" if row["enabled"] else "#ef4444"
+        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};flex-shrink:0;margin-top:1px"></span>'
+        tooltip = tooltip_fn(row).replace('"', '&quot;')
+        sparkline = sparkline_fn(row)
+        rows_html += f"""
+        <tr>
+          <td style="padding:6px 10px;white-space:nowrap;width:1%">
+            <div class="tt-wrap" data-tip="{tooltip}" style="display:flex;align-items:center;gap:6px">{dot}<span>{row['name']}</span></div>
+          </td>
+          <td style="padding:6px 10px">
+            <div class="tt-wrap" data-tip="{tooltip}">
+              <div style="position:relative;width:100%">{sparkline}
+                <div style="position:relative;height:12px">{hour_labels_html}</div>
+              </div>
+            </div>
+          </td>
+        </tr>"""
+
+    html = f"""
+    <style>
+      .rec-wrap {{ background:#ffffff;border-radius:6px;padding:4px 0 }}
+      .rec-table {{ width:100%;border-collapse:collapse;font-size:0.9em;color:#1a1a1a }}
+      .rec-table thead th {{ padding:6px 10px;text-align:left;font-weight:600;
+        color:#374151;border-bottom:2px solid #e5e7eb;white-space:nowrap;background:#ffffff }}
+      .rec-table tbody td {{ color:#1a1a1a;background:#ffffff }}
+      .rec-table tbody tr {{ border-bottom:1px solid #f3f4f6 }}
+      .rec-table tbody tr:hover td {{ background:#e8f0fe }}
+      .tt-wrap {{ position:relative;display:flex;align-items:center;width:100% }}
+      .tt-wrap::after {{
+        content: attr(data-tip);
+        position:absolute; bottom:calc(100% + 6px); left:0;
+        background:#1e293b; color:#f8fafc;
+        font-size:0.8em; line-height:1.4;
+        padding:6px 10px; border-radius:5px;
+        white-space:pre-wrap; max-width:380px; min-width:180px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.25);
+        pointer-events:none; opacity:0; transition:opacity 0.15s;
+        z-index:9999;
+      }}
+      .tt-wrap:hover::after {{ opacity:1 }}
+    </style>
+    <div class="rec-wrap">
+    <table class="rec-table">
+      <thead><tr><th>Job</th><th>Time (MST)</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    </div>"""
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ── single jobs tab ───────────────────────────────────────────────────────────
+
+def create_single_jobs_tab(scheduled_jobs):
+    if not scheduled_jobs:
+        st.info("No scheduled jobs found")
+        return
+
+    st.caption("All times in Mountain Standard Time (MST)")
+
+    # Build one row per job, sorted by first MST execution time
+    rows = []
+    for job in scheduled_jobs:
+        times = parse_job_schedule(job)
+        mst_times = sorted(convert_utc_to_mst(h, m) for h, m in times)
+        if not mst_times:
+            continue
+        first_h, first_m = mst_times[0]
+        time_labels = [format_time_12hour(h, m) for h, m in mst_times]
+        rows.append({
+            "name": job["Name"],
+            "enabled": is_job_enabled(job),
+            "mst_times": mst_times,
+            "time_labels": time_labels,
+            "sort_key": first_h + first_m / 60,
+        })
+
+    rows.sort(key=lambda r: r["sort_key"])
+
+    # Time filter slider
+    # 26 stops: 0=All, 1–24=12A–11P, 25=12A (wraps back to All)
+    _fmt = ["All","12A","1A","2A","3A","4A","5A","6A","7A","8A","9A","10A","11A",
+            "12P","1P","2P","3P","4P","5P","6P","7P","8P","9P","10P","11P","12A"]
+    selected = st.select_slider(
+        "Jump to hour",
+        options=list(range(26)),
+        value=0,
+        format_func=lambda i: _fmt[i],
+        label_visibility="collapsed",
+    )
+    if selected not in (0, 25):
+        target = selected - 1  # index 1→hour 0, index 2→hour 1, … index 24→hour 23
+        rows = [r for r in rows if any(h == target for h, m in r["mst_times"])]
+        if not rows:
+            st.info(f"No jobs run at {_fmt[selected]}")
+            return
+
+    def _sparkline(row, vw=600, h=24):
+        mid = h // 2
+        parts = []
+        for hr in range(0, 25, 6):
+            x = int(hr / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+        for hr in [3, 9, 15, 21]:
+            x = int(hr / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+        color = "#22c55e" if row["enabled"] else "#e34948"
+        for exec_h, exec_m in row["mst_times"]:
+            t = exec_h + exec_m / 60
+            x = int(t / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
+        return (
+            f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
+            f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
+            + "".join(parts) + "</svg>"
+        )
+
+    def _tooltip(row):
+        return "Runs at: " + ", ".join(row["time_labels"])
+
+    _render_job_table(rows, _sparkline, _tooltip)
+
+
 # ── recurring tab ─────────────────────────────────────────────────────────────
 
 def _last_minute(minutes_str):
@@ -359,8 +492,11 @@ def create_recurring_tab(recurring_jobs):
         mid = h // 2
         for hr in range(0, 25, 6):
             x = int(hr / 24 * vw)
-            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#e5e7eb" stroke-width="1"/>')
-        color = "#2a78d6" if row["enabled"] else "#e34948"
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+        for hr in [3, 9, 15, 21]:
+            x = int(hr / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#d1d5db" stroke-width="1"/>')
+        color = "#22c55e" if row["enabled"] else "#e34948"
 
         if row["type"] == "discrete":
             # Individual scheduled times — spike at each exact time
@@ -410,68 +546,7 @@ def create_recurring_tab(recurring_jobs):
             ]
             return f"Runs at: {', '.join(time_labels)}"
 
-    hour_labels_html = "".join(
-        f'<span style="position:absolute;left:{int(h/24*100)}%;font-size:9px;color:#9ca3af;transform:translateX(-50%)">'
-        f'{"12A" if h==0 else "6A" if h==6 else "12P" if h==12 else "6P" if h==18 else ""}</span>'
-        for h in [0, 6, 12, 18, 24]
-    )
-
-    rows_html = ""
-    for row in rows:
-        dot_color = "#22c55e" if row["enabled"] else "#ef4444"
-        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};flex-shrink:0;margin-top:1px"></span>'
-        tooltip = _tooltip_text(row).replace('"', '&quot;')
-        sparkline = _sparkline_svg(row)
-        rows_html += f"""
-        <tr>
-          <td style="padding:6px 10px;white-space:nowrap;width:1%">
-            <div class="tt-wrap" data-tip="{tooltip}" style="display:flex;align-items:center;gap:6px">{dot}<span>{row['name']}</span></div>
-          </td>
-          <td style="padding:6px 10px">
-            <div class="tt-wrap" data-tip="{tooltip}">
-              <div style="position:relative;width:100%">{sparkline}
-                <div style="position:relative;height:12px">{hour_labels_html}</div>
-              </div>
-            </div>
-          </td>
-        </tr>"""
-
-    html = f"""
-    <style>
-      .rec-wrap {{ background:#ffffff;border-radius:6px;padding:4px 0 }}
-      .rec-table {{ width:100%;border-collapse:collapse;font-size:0.9em;color:#1a1a1a }}
-      .rec-table thead th {{ padding:6px 10px;text-align:left;font-weight:600;
-        color:#374151;border-bottom:2px solid #e5e7eb;white-space:nowrap;background:#ffffff }}
-      .rec-table tbody td {{ color:#1a1a1a;background:#ffffff }}
-      .rec-table tbody tr {{ border-bottom:1px solid #f3f4f6 }}
-      .rec-table tbody tr:hover td {{ background:#e8f0fe }}
-
-      /* CSS tooltip */
-      .tt-wrap {{ position:relative;display:flex;align-items:center;width:100% }}
-      .tt-wrap::after {{
-        content: attr(data-tip);
-        position:absolute; bottom:calc(100% + 6px); left:0;
-        background:#1e293b; color:#f8fafc;
-        font-size:0.8em; line-height:1.4;
-        padding:6px 10px; border-radius:5px;
-        white-space:pre-wrap; max-width:380px; min-width:180px;
-        box-shadow:0 2px 8px rgba(0,0,0,0.25);
-        pointer-events:none; opacity:0; transition:opacity 0.15s;
-        z-index:9999;
-      }}
-      .tt-wrap:hover::after {{ opacity:1 }}
-    </style>
-    <div class="rec-wrap">
-    <table class="rec-table">
-      <thead><tr>
-        <th>Job</th>
-        <th>24h Window (MST)</th>
-      </tr></thead>
-      <tbody>{rows_html}</tbody>
-    </table>
-    </div>"""
-
-    st.markdown(html, unsafe_allow_html=True)
+    _render_job_table(rows, _sparkline_svg, _tooltip_text)
 
 
 # ── main fetch + layout ───────────────────────────────────────────────────────
@@ -485,44 +560,48 @@ def color_enabled(val):
 
 
 @st.cache_data
-def getJobs(atomId, label):
+def fetchJobs(atomId):
     r = requests.get('https://api.qa.trellis.arizona.edu/ws/rest/v1/util/getScheduledJobs/' + atomId)
-
-    st.header(f"📋 {label}")
-
     if len(r.content) > 5:
-        df = pd.DataFrame.from_dict(r.json())
+        return pd.DataFrame.from_dict(r.json())
+    return pd.DataFrame()
 
-        show_job_statistics(df)
-        st.write("---")
 
-        recurring_jobs, scheduled_jobs = categorize_jobs(df)
-
-        tab1, tab2, tab3 = st.tabs(["📊 Timeline", "🔄 Recurring Jobs", "📋 Table"])
-
-        with tab1:
-            create_timeline_tab(scheduled_jobs)
-
-        with tab2:
-            create_recurring_tab(recurring_jobs)
-
-        with tab3:
-            st.subheader("Complete Job Table")
-            st.dataframe(
-                data=df.style.map(color_enabled, subset=['enabled']),
-                column_order=('Name', 'enabled', 'id', 'hours', 'minutes', 'daysOfWeek', 'daysOfMonth', 'months', 'years', 'cron'),
-                use_container_width=True,
-                height=600,
-            )
-    else:
+def renderJobs(df, label):
+    st.header(f"📋 {label}")
+    if df.empty:
         st.warning('⚠️ No jobs scheduled')
+        return
 
-    return df if len(r.content) > 5 else pd.DataFrame()
+    show_job_statistics(df)
+    st.write("---")
+
+    recurring_jobs, scheduled_jobs = categorize_jobs(df)
+
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Timeline", "📅 Single Jobs", "🔄 Recurring Jobs", "📋 Table"])
+
+    with tab1:
+        create_timeline_tab(scheduled_jobs)
+
+    with tab2:
+        create_single_jobs_tab(scheduled_jobs)
+
+    with tab3:
+        create_recurring_tab(recurring_jobs)
+
+    with tab4:
+        st.subheader("Complete Job Table")
+        st.dataframe(
+            data=df.style.map(color_enabled, subset=['enabled']),
+            column_order=('Name', 'enabled', 'id', 'hours', 'minutes', 'daysOfWeek', 'daysOfMonth', 'months', 'years', 'cron'),
+            use_container_width=True,
+            height=600,
+        )
 
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "2.5"
+VERSION = "3.5"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")
@@ -562,11 +641,11 @@ if 'selected_env' not in st.session_state:
     st.session_state.selected_env = None
 
 if st.session_state.selected_env == 'prod':
-    getJobs('3d78acc2-9f2b-41ff-bbfd-a3f2ed30c89e', 'Production Molecule')
+    renderJobs(fetchJobs('3d78acc2-9f2b-41ff-bbfd-a3f2ed30c89e'), 'Production Molecule')
 elif st.session_state.selected_env == 'qa':
-    getJobs('58e8640c-7dcd-44fc-8308-a1f0239fc789', 'QA Atom')
+    renderJobs(fetchJobs('58e8640c-7dcd-44fc-8308-a1f0239fc789'), 'QA Atom')
 elif st.session_state.selected_env == 'sandbox':
-    getJobs('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1', 'Sandbox Atom')
+    renderJobs(fetchJobs('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1'), 'Sandbox Atom')
 else:
     st.info("👆 Select an environment from the sidebar to view scheduled jobs")
     try:

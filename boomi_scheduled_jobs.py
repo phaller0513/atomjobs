@@ -89,18 +89,41 @@ def categorize_jobs(df):
 
 # ── statistics strip ─────────────────────────────────────────────────────────
 
-def show_job_statistics(df):
+def show_job_statistics(df, sidebar=False):
     total = len(df)
     enabled = sum(1 for _, j in df.iterrows() if is_job_enabled(j))
     disabled = total - enabled
     recurring, scheduled = categorize_jobs(df)
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Total Jobs", total)
-    c2.metric("Enabled", enabled, delta=f"{enabled/total*100:.1f}%")
-    c3.metric("Disabled", disabled, delta=f"{disabled/total*100:.1f}%")
-    c4.metric("Recurring", len(recurring))
-    c5.metric("Scheduled", len(scheduled))
+    if sidebar:
+        st.sidebar.write("---")
+        st.sidebar.markdown(f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:4px">
+  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
+    <div style="font-size:22px;font-weight:700">{total}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:2px">Total</div>
+  </div>
+  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
+    <div style="font-size:22px;font-weight:700;color:#4CAF50">{enabled}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:2px">Enabled</div>
+  </div>
+  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
+    <div style="font-size:22px;font-weight:700">{len(recurring)}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:2px">Recurring</div>
+  </div>
+  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
+    <div style="font-size:22px;font-weight:700">{len(scheduled)}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:2px">Single</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total Jobs", total)
+        c2.metric("Enabled", enabled, delta=f"{enabled/total*100:.1f}%")
+        c3.metric("Disabled", disabled, delta=f"{disabled/total*100:.1f}%")
+        c4.metric("Recurring", len(recurring))
+        c5.metric("Scheduled", len(scheduled))
 
 
 # ── timeline tab ──────────────────────────────────────────────────────────────
@@ -513,17 +536,15 @@ def fetchJobs(atomId):
 
 
 def renderJobs(df, label):
-    st.header(f"📋 {label}")
     if df.empty:
-        st.warning('⚠️ No jobs scheduled')
+        st.warning('No jobs scheduled')
         return
 
-    show_job_statistics(df)
-    st.write("---")
+    show_job_statistics(df, sidebar=True)
 
     recurring_jobs, scheduled_jobs = categorize_jobs(df)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 All Jobs", "📅 Single Jobs", "🔄 Recurring Jobs", "📋 Table"])
+    tab1, tab2, tab3, tab4 = st.tabs(["All Jobs", "Single Jobs", "Recurring Jobs", "Table"])
 
     with tab1:
         create_combined_tab(scheduled_jobs, recurring_jobs)
@@ -546,59 +567,55 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "4.2"
+VERSION = "4.4"
 
-st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
-st.title("⚙️ Boomi Scheduled Jobs Dashboard")
-st.caption(f"v{VERSION}")
-st.sidebar.title('🎛️ Environment Controls')
+st.set_page_config(page_title="Boomi Job Scheduler", layout="wide")
 
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.sidebar.button('🏭 Production', type="primary", use_container_width=True):
-        st.session_state.selected_env = 'prod'
-with col2:
-    if st.sidebar.button('🧪 QA', type="secondary", use_container_width=True):
-        st.session_state.selected_env = 'qa'
+ENV_OPTIONS = {
+    'Production': ('3d78acc2-9f2b-41ff-bbfd-a3f2ed30c89e', 'Production Molecule'),
+    'QA':         ('58e8640c-7dcd-44fc-8308-a1f0239fc789', 'QA Atom'),
+    'Sandbox':    ('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1', 'Sandbox Atom'),
+}
 
-if st.sidebar.button('🏖️ Sandbox', type="secondary", use_container_width=True):
-    st.session_state.selected_env = 'sandbox'
+st.sidebar.markdown(f"<div style='font-size:13px;color:#aaa;margin-bottom:4px'>v{VERSION}</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='font-size:13px;font-weight:600;margin-bottom:6px'>Environment</div>", unsafe_allow_html=True)
+st.sidebar.markdown("""
+<style>
+div[data-testid="stRadio"] label { font-size: 15px !important; padding: 4px 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+selected_env = st.sidebar.radio(
+    "Environment",
+    options=list(ENV_OPTIONS.keys()),
+    index=None,
+    label_visibility="collapsed",
+)
+
+with st.sidebar.expander("Help & Info"):
+    st.write("""
+**All Jobs**: Combined view of all scheduled jobs
+
+**Single Jobs**: One-time scheduled runs
+
+**Recurring Jobs**: Jobs on repeating schedules
+
+**Table**: Full raw job data
+
+**Status**: Enabled = green, Disabled = red
+
+Times shown in MST (UTC-7)
+""")
 
 st.sidebar.write("---")
-if st.sidebar.button('🗑️ Clear Cache', help="Clear cached API responses"):
+if st.sidebar.button('Clear Cache', help="Clear cached API responses"):
     clear_cache()
     st.sidebar.success("Cache cleared!")
 
-with st.sidebar.expander("ℹ️ Help & Info"):
-    st.write("""
-    **Timeline**: Density bar chart + hour-bucket drill-down
-    **Recurring Jobs**: Gantt chart of active time windows
-    **Table**: Full raw job data
-
-    **Status**:
-    - ● Enabled
-    - ○ Disabled
-
-    Times shown in MST (UTC-7)
-    """)
-
-if 'selected_env' not in st.session_state:
-    st.session_state.selected_env = None
-
-if st.session_state.selected_env == 'prod':
-    renderJobs(fetchJobs('3d78acc2-9f2b-41ff-bbfd-a3f2ed30c89e'), 'Production Molecule')
-elif st.session_state.selected_env == 'qa':
-    renderJobs(fetchJobs('58e8640c-7dcd-44fc-8308-a1f0239fc789'), 'QA Atom')
-elif st.session_state.selected_env == 'sandbox':
-    renderJobs(fetchJobs('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1'), 'Sandbox Atom')
+if selected_env:
+    atom_id, label = ENV_OPTIONS[selected_env]
+    st.title(f"Boomi Scheduled Jobs - {selected_env}")
+    renderJobs(fetchJobs(atom_id), label)
 else:
-    st.info("👆 Select an environment from the sidebar to view scheduled jobs")
-    try:
-        sample_df = pd.read_csv('boomijobschedule.csv')
-        if not sample_df.empty:
-            st.subheader("📄 Sample Data Preview")
-            show_job_statistics(sample_df)
-            with st.expander("View Sample Jobs"):
-                st.dataframe(sample_df.head(10), use_container_width=True)
-    except Exception:
-        pass
+    st.title("Boomi Scheduled Jobs")
+    st.info("Select an environment from the sidebar to view scheduled jobs")

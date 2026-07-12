@@ -295,40 +295,6 @@ def parse_recurring_windows(job):
         return [(start_frac, 24.0), (0.0, end_frac)], interval
 
 
-def _ekg_trace(start, end, interval, y_center, spike_height=0.35):
-    """
-    Build x/y arrays for an EKG-style trace:
-    - thin baseline from start to end
-    - a vertical spike at each execution time
-    Returns (xs, ys) suitable for go.Scatter.
-    """
-    xs, ys = [], []
-
-    # Execution times as fractional hours within [start, end]
-    exec_times = []
-    t = start
-    while t <= end + 1e-9:
-        exec_times.append(t)
-        t += interval / 60.0
-
-    # Build the trace: baseline with a spike at each execution
-    prev = start
-    for et in exec_times:
-        if et > end + 1e-9:
-            break
-        # flat baseline up to just before spike
-        xs += [prev, et - 1e-6]
-        ys += [y_center, y_center]
-        # spike up and back down
-        xs += [et, et + 1e-6, et + 2e-6]
-        ys += [y_center + spike_height, y_center + spike_height, y_center]
-        prev = et + 2e-6
-
-    # tail baseline to end
-    xs += [prev, end]
-    ys += [y_center, y_center]
-
-    return xs, ys
 
 
 def create_recurring_tab(recurring_jobs):
@@ -386,112 +352,111 @@ def create_recurring_tab(recurring_jobs):
 
     rows.sort(key=lambda r: (not r["enabled"], r["first_start"]))
 
-    n_rows = len(rows)
-    # Each row occupies 1 unit of y; spikes fit within 0–1
-    spike_h = 0.32
-    row_height = 28
-    fig = go.Figure()
-
-    hour_ticks = list(range(0, 25, 2))
-    hour_tick_labels = [format_time_12hour(h % 24, 0).replace(":00 ", "") for h in hour_ticks]
-
-    for i, row in enumerate(rows):
-        y_center = i
+    def _sparkline_svg(row, vw=600, h=20):
+        """Inline SVG using viewBox so it stretches to fill column width."""
+        parts = []
+        for hr in range(0, 25, 6):
+            x = int(hr / 24 * vw)
+            parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#e5e7eb" stroke-width="1"/>')
         color = "#2a78d6" if row["enabled"] else "#e34948"
-
         if row["type"] == "continuous":
-            total_execs = 0
+            for start_f, end_f in row["windows"]:
+                x1 = int(start_f / 24 * vw)
+                x2 = int(min(end_f, 24) / 24 * vw)
+                bar_h = 6
+                y = (h - bar_h) // 2
+                parts.append(f'<rect x="{x1}" y="{y}" width="{max(4, x2-x1)}" height="{bar_h}" fill="{color}" rx="1"/>')
+        else:
+            for t in row["discrete_times"]:
+                x = int(t / 24 * vw)
+                parts.append(f'<line x1="{x}" y1="{h-12}" x2="{x}" y2="{h-4}" stroke="{color}" stroke-width="3"/>')
+        return (
+            f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
+            f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
+            + "".join(parts) + "</svg>"
+        )
+
+    def _tooltip_text(row):
+        if row["type"] == "continuous":
             window_strs = []
             for start_f, end_f in row["windows"]:
-                xs, ys = _ekg_trace(start_f, end_f, row["interval"], y_center, spike_h)
-                fig.add_trace(go.Scatter(
-                    x=xs, y=ys, mode="lines",
-                    line=dict(color=color, width=1.5),
-                    showlegend=False, hoverinfo="skip",
-                ))
-                n_execs = max(1, int((end_f - start_f) * 60 / row["interval"]) + 1)
-                total_execs += n_execs
                 sh = int(start_f); sm = int(round((start_f - sh) * 60))
                 eh = int(end_f) % 24; em = int(round((end_f - int(end_f)) * 60))
                 window_strs.append(f"{format_time_12hour(sh % 24, sm)} – {format_time_12hour(eh, em)}")
-            times_line = f"Window(s): {'  |  '.join(window_strs)}"
-            execs_line = f"~{total_execs} executions/day"
+            total_execs = sum(
+                max(1, int((e - s) * 60 / row["interval"]) + 1)
+                for s, e in row["windows"]
+            )
+            return f"Window: {' | '.join(window_strs)} · {row['interval_label']} · ~{total_execs} executions/day"
         else:
-            # Discrete: draw individual spikes, no connecting baseline
-            xs, ys = [], []
-            for t in row["discrete_times"]:
-                xs += [t, t, t + 1e-6]
-                ys += [y_center, y_center + spike_h, y_center]
-            fig.add_trace(go.Scatter(
-                x=xs, y=ys, mode="lines",
-                line=dict(color=color, width=1.5),
-                showlegend=False, hoverinfo="skip",
-            ))
             time_labels = [
                 format_time_12hour(int(t) % 24, int(round((t - int(t)) * 60)))
                 for t in row["discrete_times"]
             ]
-            times_line = "Runs at: " + ",  ".join(time_labels)
-            execs_line = f"{len(row['discrete_times'])} times/day"
+            return f"Runs at: {', '.join(time_labels)}"
 
-        tooltip = (
-            f"<b>{row['name']}</b><br>"
-            f"{times_line}<br>"
-            f"{execs_line}<br>"
-            f"Status: {'Enabled' if row['enabled'] else 'Disabled'}"
-            "<extra></extra>"
-        )
-        # Dense hit strip every 0.2h from -3 to 24 — ~135 points so tooltip
-        # fires almost anywhere on the row including over the y-axis label
-        hit_xs = [-3, -2, -1] + [x * 0.2 for x in range(121)]
-        fig.add_trace(go.Scatter(
-            x=hit_xs,
-            y=[y_center] * len(hit_xs),
-            mode="markers",
-            marker=dict(size=14, opacity=0),
-            showlegend=False,
-            hovertemplate=tooltip,
-            cliponaxis=False,
-        ))
-
-    fig.update_layout(
-        height=max(300, n_rows * row_height + 80),
-        margin=dict(l=10, r=20, t=40, b=50),
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
-        xaxis=dict(
-            title="Hour (MST)",
-            range=[0, 24],
-            tickvals=hour_ticks,
-            ticktext=hour_tick_labels,
-            gridcolor="#f0f0f0",
-            zeroline=False,
-            tickfont=dict(size=11, color="#1a1a1a"),
-            title_font=dict(color="#1a1a1a"),
-        ),
-        yaxis=dict(
-            range=[-0.6, n_rows - 0.1],
-            tickvals=list(range(n_rows)),
-            ticktext=[r["name"][:55] + ("…" if len(r["name"]) > 55 else "") for r in rows],
-            tickfont=dict(size=11, color="#1a1a1a"),
-            gridcolor="#f0f0f0",
-            zeroline=False,
-        ),
-        hoverlabel=dict(
-            bgcolor="white",
-            font_size=12,
-            font_color="#1a1a1a",
-            bordercolor="#cccccc",
-        ),
-        title="Recurring Jobs — Execution Pattern",
+    hour_labels_html = "".join(
+        f'<span style="position:absolute;left:{int(h/24*100)}%;font-size:9px;color:#9ca3af;transform:translateX(-50%)">'
+        f'{"12A" if h==0 else "6A" if h==6 else "12P" if h==12 else "6P" if h==18 else ""}</span>'
+        for h in [0, 6, 12, 18, 24]
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    rows_html = ""
+    for row in rows:
+        dot_color = "#22c55e" if row["enabled"] else "#ef4444"
+        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};flex-shrink:0;margin-top:1px"></span>'
+        tooltip = _tooltip_text(row).replace('"', '&quot;')
+        sparkline = _sparkline_svg(row)
+        rows_html += f"""
+        <tr>
+          <td style="padding:6px 10px;white-space:nowrap;width:1%">
+            <div class="tt-wrap" data-tip="{tooltip}" style="display:flex;align-items:center;gap:6px">{dot}<span>{row['name']}</span></div>
+          </td>
+          <td style="padding:6px 10px">
+            <div class="tt-wrap" data-tip="{tooltip}">
+              <div style="position:relative">{sparkline}
+                <div style="position:relative;height:12px">{hour_labels_html}</div>
+              </div>
+            </div>
+          </td>
+        </tr>"""
 
-    # Legend
-    lc1, lc2, _ = st.columns([1, 1, 4])
-    lc1.markdown("<span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:#2a78d6;vertical-align:middle;margin-right:5px'></span> **Enabled**", unsafe_allow_html=True)
-    lc2.markdown("<span style='display:inline-block;width:10px;height:10px;border-radius:50%;background:#ef4444;vertical-align:middle;margin-right:5px'></span> **Disabled**", unsafe_allow_html=True)
+    html = f"""
+    <style>
+      .rec-wrap {{ background:#ffffff;border-radius:6px;padding:4px 0 }}
+      .rec-table {{ width:100%;border-collapse:collapse;font-size:0.9em;color:#1a1a1a }}
+      .rec-table thead th {{ padding:6px 10px;text-align:left;font-weight:600;
+        color:#374151;border-bottom:2px solid #e5e7eb;white-space:nowrap;background:#ffffff }}
+      .rec-table tbody td {{ color:#1a1a1a;background:#ffffff }}
+      .rec-table tbody tr {{ border-bottom:1px solid #f3f4f6 }}
+      .rec-table tbody tr:hover td {{ background:#e8f0fe }}
+
+      /* CSS tooltip */
+      .tt-wrap {{ position:relative;display:flex;align-items:center }}
+      .tt-wrap::after {{
+        content: attr(data-tip);
+        position:absolute; bottom:calc(100% + 6px); left:0;
+        background:#1e293b; color:#f8fafc;
+        font-size:0.8em; line-height:1.4;
+        padding:6px 10px; border-radius:5px;
+        white-space:pre-wrap; max-width:380px; min-width:180px;
+        box-shadow:0 2px 8px rgba(0,0,0,0.25);
+        pointer-events:none; opacity:0; transition:opacity 0.15s;
+        z-index:9999;
+      }}
+      .tt-wrap:hover::after {{ opacity:1 }}
+    </style>
+    <div class="rec-wrap">
+    <table class="rec-table">
+      <thead><tr>
+        <th>Job</th>
+        <th>24h Window (MST)</th>
+      </tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    </div>"""
+
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ── main fetch + layout ───────────────────────────────────────────────────────
@@ -542,7 +507,7 @@ def getJobs(atomId, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "1.9"
+VERSION = "2.3"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")

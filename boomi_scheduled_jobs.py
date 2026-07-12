@@ -46,11 +46,14 @@ def parse_job_schedule(job):
         return [(0, 0)]
 
 
+RUNTIME_TZ = pytz.timezone(st.secrets["timezones"]["runtime_tz"])
+DISPLAY_TZ  = pytz.timezone(st.secrets["timezones"]["display_tz"])
+DISPLAY_TZ_LABEL = DISPLAY_TZ.zone.split("/")[-1]
+
 def convert_utc_to_mst(hour, minute):
-    utc_time = datetime(2025, 1, 1, hour, minute, tzinfo=pytz.UTC)
-    mst_tz = pytz.timezone('US/Mountain')
-    mst_time = utc_time.astimezone(mst_tz)
-    return mst_time.hour, mst_time.minute
+    runtime_time = datetime(2025, 1, 1, hour, minute, tzinfo=RUNTIME_TZ)
+    display_time = runtime_time.astimezone(DISPLAY_TZ)
+    return display_time.hour, display_time.minute
 
 
 def format_time_12hour(hour, minute):
@@ -119,7 +122,7 @@ def show_job_statistics(df, sidebar=False):
 </div>
 """, unsafe_allow_html=True)
         with st.sidebar.expander("Help & Info"):
-            st.write("""
+            st.write(f"""
 **All Jobs**: Combined view of all scheduled jobs
 
 **Single Jobs**: One-time scheduled runs
@@ -130,7 +133,7 @@ def show_job_statistics(df, sidebar=False):
 
 **Status**: Enabled = green, Disabled = red
 
-Times shown in MST (UTC-7)
+Times shown in {DISPLAY_TZ_LABEL}
 """)
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -311,7 +314,7 @@ def create_combined_tab(scheduled_jobs, recurring_jobs):
     if selected != 0:
         target = (selected - 1) % 24
         end_label = _fmt[(target + 1) % 24 + 1]
-        caption_placeholder.caption(f"All times in Mountain Standard Time (MST). Currently displaying {_fmt[target + 1]} – {end_label}")
+        caption_placeholder.caption(f"All times in {DISPLAY_TZ_LABEL}. Currently displaying {_fmt[target + 1]} – {end_label}")
         filtered_interleaved = [r for r in interleaved if _row_active_in_hour(r, target)]
         visible_rows = filtered_interleaved + fullday
         if not visible_rows:
@@ -322,7 +325,7 @@ def create_combined_tab(scheduled_jobs, recurring_jobs):
             divider_before=len(filtered_interleaved) if fullday else None,
         )
     else:
-        caption_placeholder.caption("All times in Mountain Standard Time (MST)")
+        caption_placeholder.caption(f"All times in {DISPLAY_TZ_LABEL}")
         _render_job_table(
             interleaved + fullday, _sparkline_for_row, _tooltip_for_row,
             divider_before=len(interleaved) if fullday else None,
@@ -385,7 +388,7 @@ def _render_job_table(rows, sparkline_fn, tooltip_fn, divider_before=None):
     </style>
     <div class="rec-wrap">
     <table class="rec-table">
-      <thead><tr><th>Job</th><th>Time (MST)</th></tr></thead>
+      <thead><tr><th>Job</th><th>Time ({DISPLAY_TZ_LABEL})</th></tr></thead>
       <tbody>{rows_html}</tbody>
     </table>
     </div>"""
@@ -399,7 +402,7 @@ def create_single_jobs_tab(scheduled_jobs):
         st.info("No scheduled jobs found")
         return
     caption_placeholder = st.empty()
-    caption_placeholder.caption("All times in Mountain Standard Time (MST)")
+    caption_placeholder.caption(f"All times in {DISPLAY_TZ_LABEL}")
     rows = sorted(_build_single_rows(scheduled_jobs), key=lambda r: r["sort_key"])
 
     # 26-stop time filter slider
@@ -412,7 +415,7 @@ def create_single_jobs_tab(scheduled_jobs):
     if selected != 0:
         target = (selected - 1) % 24
         end_label = _fmt[(target + 1) % 24 + 1]
-        caption_placeholder.caption(f"All times in Mountain Standard Time (MST). Currently displaying {_fmt[target + 1]} – {end_label}")
+        caption_placeholder.caption(f"All times in {DISPLAY_TZ_LABEL}. Currently displaying {_fmt[target + 1]} – {end_label}")
         rows = [r for r in rows if any(h == target for h, m in r["mst_times"])]
         if not rows:
             st.info(f"No jobs run at {_fmt[selected]}")
@@ -526,7 +529,7 @@ def create_recurring_tab(recurring_jobs):
     if not recurring_jobs:
         st.info("No recurring jobs found")
         return
-    st.caption("All times in Mountain Standard Time (MST). Each spike marks an execution.")
+    st.caption(f"All times in {DISPLAY_TZ_LABEL}. Each spike marks an execution.")
     rows = _build_recurring_rows(recurring_jobs)
     rows.sort(key=lambda r: (not r["enabled"], r["first_start"]))
     _render_job_table(rows, _sparkline_for_row, _tooltip_for_row)
@@ -544,7 +547,7 @@ def color_enabled(val):
 
 @st.cache_data
 def fetchJobs(atomId):
-    r = requests.get('https://api.qa.trellis.arizona.edu/ws/rest/v1/util/getScheduledJobs/' + atomId)
+    r = requests.get(st.secrets["api"]["base_url"] + "/" + atomId)
     if len(r.content) > 5:
         return pd.DataFrame.from_dict(r.json())
     return pd.DataFrame()
@@ -588,14 +591,13 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "4.13"
+VERSION = "4.17"
 
 st.set_page_config(page_title="Boomi Job Scheduler", layout="wide")
 
 ENV_OPTIONS = {
-    'Production': ('3d78acc2-9f2b-41ff-bbfd-a3f2ed30c89e', 'Production Molecule'),
-    'QA':         ('58e8640c-7dcd-44fc-8308-a1f0239fc789', 'QA Atom'),
-    'Sandbox':    ('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1', 'Sandbox Atom'),
+    name: cfg["environment_id"]
+    for name, cfg in st.secrets["environments"].items()
 }
 
 st.sidebar.markdown("""
@@ -637,9 +639,8 @@ st.sidebar.markdown(f"""
 """, unsafe_allow_html=True)
 
 if selected_env:
-    atom_id, label = ENV_OPTIONS[selected_env]
     st.title(f"Boomi Scheduled Jobs - {selected_env}")
-    renderJobs(fetchJobs(atom_id), label)
+    renderJobs(fetchJobs(ENV_OPTIONS[selected_env]), selected_env)
 else:
     st.title("Boomi Scheduled Jobs")
     st.info("Select an environment from the sidebar to view scheduled jobs")

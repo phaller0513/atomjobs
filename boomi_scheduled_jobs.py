@@ -352,24 +352,39 @@ def create_recurring_tab(recurring_jobs):
 
     rows.sort(key=lambda r: (not r["enabled"], r["first_start"]))
 
-    def _sparkline_svg(row, vw=600, h=20):
-        """Inline SVG using viewBox so it stretches to fill column width."""
+    def _sparkline_svg(row, vw=600, h=24):
+        """Inline SVG using viewBox so it stretches to fill column width.
+        Dense jobs (interval < 10 min) get a solid bar; sparse get baseline+spikes."""
         parts = []
+        mid = h // 2
         for hr in range(0, 25, 6):
             x = int(hr / 24 * vw)
             parts.append(f'<line x1="{x}" y1="0" x2="{x}" y2="{h}" stroke="#e5e7eb" stroke-width="1"/>')
         color = "#2a78d6" if row["enabled"] else "#e34948"
-        if row["type"] == "continuous":
+
+        if row["type"] == "discrete":
+            # Individual scheduled times — spike at each exact time
+            for t in row["discrete_times"]:
+                x = int(t / 24 * vw)
+                parts.append(f'<line x1="{x}" y1="{mid-7}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="3"/>')
+        else:
+            use_ekg = row["interval"] >= 10
             for start_f, end_f in row["windows"]:
                 x1 = int(start_f / 24 * vw)
                 x2 = int(min(end_f, 24) / 24 * vw)
-                bar_h = 6
-                y = (h - bar_h) // 2
-                parts.append(f'<rect x="{x1}" y="{y}" width="{max(4, x2-x1)}" height="{bar_h}" fill="{color}" rx="1"/>')
-        else:
-            for t in row["discrete_times"]:
-                x = int(t / 24 * vw)
-                parts.append(f'<line x1="{x}" y1="{h-12}" x2="{x}" y2="{h-4}" stroke="{color}" stroke-width="3"/>')
+                if not use_ekg:
+                    # Dense: solid filled bar
+                    bar_h = 6
+                    parts.append(f'<rect x="{x1}" y="{mid - bar_h//2}" width="{max(4, x2-x1)}" height="{bar_h}" fill="{color}" rx="1"/>')
+                else:
+                    # Sparse: thin faded baseline + vertical spike at each execution
+                    parts.append(f'<line x1="{x1}" y1="{mid}" x2="{x2}" y2="{mid}" stroke="{color}" stroke-width="1" opacity="0.35"/>')
+                    t = start_f
+                    while t <= end_f + 1e-9:
+                        x = int(t / 24 * vw)
+                        parts.append(f'<line x1="{x}" y1="{mid-8}" x2="{x}" y2="{mid+1}" stroke="{color}" stroke-width="2"/>')
+                        t += row["interval"] / 60.0
+
         return (
             f'<svg width="100%" height="{h}" viewBox="0 0 {vw} {h}" preserveAspectRatio="none"'
             f' style="display:block" xmlns="http://www.w3.org/2000/svg">'
@@ -507,7 +522,7 @@ def getJobs(atomId, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 st.set_page_config(page_title="Boomi Job Scheduler", page_icon="⚙️", layout="wide")
 st.title("⚙️ Boomi Scheduled Jobs Dashboard")

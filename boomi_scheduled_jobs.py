@@ -97,8 +97,9 @@ def show_job_statistics(df, sidebar=False):
 
     if sidebar:
         st.sidebar.write("---")
+        st.sidebar.markdown("<div style='font-size:17px;font-weight:700;margin-bottom:6px'>Job Stats</div>", unsafe_allow_html=True)
         st.sidebar.markdown(f"""
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px">
   <div style="background:#1a1f2e;border:1px solid #2d3550;border-radius:8px;padding:14px 8px;text-align:center">
     <div style="font-size:28px;font-weight:700;line-height:1">{total}</div>
     <div style="font-size:11px;color:#7a8aaa;margin-top:5px;text-transform:uppercase;letter-spacing:.05em">Total</div>
@@ -117,6 +118,20 @@ def show_job_statistics(df, sidebar=False):
   </div>
 </div>
 """, unsafe_allow_html=True)
+        with st.sidebar.expander("Help & Info"):
+            st.write("""
+**All Jobs**: Combined view of all scheduled jobs
+
+**Single Jobs**: One-time scheduled runs
+
+**Recurring Jobs**: Jobs on repeating schedules
+
+**Table**: Full raw job data
+
+**Status**: Enabled = green, Disabled = red
+
+Times shown in MST (UTC-7)
+""")
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total Jobs", total)
@@ -573,7 +588,7 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "4.11"
+VERSION = "4.13"
 
 st.set_page_config(page_title="Boomi Job Scheduler", layout="wide")
 
@@ -587,6 +602,7 @@ st.sidebar.markdown("""
 <style>
 div[data-testid="stRadio"] label p { font-size: 20px !important; }
 div[data-testid="stRadio"] label { padding: 6px 0 !important; }
+div[data-testid="stRadio"] > div { margin-bottom: -16px !important; }
 section[data-testid="stSidebar"] > div { padding-bottom: 80px; }
 .sidebar-footer {
     position: fixed;
@@ -604,7 +620,7 @@ section[data-testid="stSidebar"] > div { padding-bottom: 80px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown("<div style='font-size:13px;font-weight:600;margin-bottom:6px'>Environment</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div style='font-size:17px;font-weight:700;margin-bottom:6px'>Environment</div>", unsafe_allow_html=True)
 
 selected_env = st.sidebar.radio(
     "Environment",
@@ -612,21 +628,6 @@ selected_env = st.sidebar.radio(
     index=None,
     label_visibility="collapsed",
 )
-
-with st.sidebar.expander("Help & Info"):
-    st.write("""
-**All Jobs**: Combined view of all scheduled jobs
-
-**Single Jobs**: One-time scheduled runs
-
-**Recurring Jobs**: Jobs on repeating schedules
-
-**Table**: Full raw job data
-
-**Status**: Enabled = green, Disabled = red
-
-Times shown in MST (UTC-7)
-""")
 
 st.sidebar.markdown(f"""
 <div class="sidebar-footer">

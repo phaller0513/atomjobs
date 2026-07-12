@@ -98,22 +98,22 @@ def show_job_statistics(df, sidebar=False):
     if sidebar:
         st.sidebar.write("---")
         st.sidebar.markdown(f"""
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:4px">
-  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
-    <div style="font-size:22px;font-weight:700">{total}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:2px">Total</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">
+  <div style="background:#1a1f2e;border:1px solid #2d3550;border-radius:8px;padding:14px 8px;text-align:center">
+    <div style="font-size:28px;font-weight:700;line-height:1">{total}</div>
+    <div style="font-size:11px;color:#7a8aaa;margin-top:5px;text-transform:uppercase;letter-spacing:.05em">Total</div>
   </div>
-  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
-    <div style="font-size:22px;font-weight:700;color:#4CAF50">{enabled}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:2px">Enabled</div>
+  <div style="background:#0f2318;border:1px solid #1e4530;border-radius:8px;padding:14px 8px;text-align:center">
+    <div style="font-size:28px;font-weight:700;line-height:1;color:#4CAF50">{enabled}</div>
+    <div style="font-size:11px;color:#5a8a6a;margin-top:5px;text-transform:uppercase;letter-spacing:.05em">Enabled</div>
   </div>
-  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
-    <div style="font-size:22px;font-weight:700">{len(recurring)}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:2px">Recurring</div>
+  <div style="background:#1a1428;border:1px solid #302040;border-radius:8px;padding:14px 8px;text-align:center">
+    <div style="font-size:28px;font-weight:700;line-height:1;color:#9b7fd4">{len(recurring)}</div>
+    <div style="font-size:11px;color:#6a5a8a;margin-top:5px;text-transform:uppercase;letter-spacing:.05em">Recurring</div>
   </div>
-  <div style="background:#262730;border-radius:6px;padding:10px 6px;text-align:center">
-    <div style="font-size:22px;font-weight:700">{len(scheduled)}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:2px">Single</div>
+  <div style="background:#1a1f2e;border:1px solid #2d3550;border-radius:8px;padding:14px 8px;text-align:center">
+    <div style="font-size:28px;font-weight:700;line-height:1;color:#5ba3d9">{len(scheduled)}</div>
+    <div style="font-size:11px;color:#4a6a8a;margin-top:5px;text-transform:uppercase;letter-spacing:.05em">Single</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -567,7 +567,7 @@ def renderJobs(df, label):
 
 # ── app shell ─────────────────────────────────────────────────────────────────
 
-VERSION = "4.4"
+VERSION = "4.6"
 
 st.set_page_config(page_title="Boomi Job Scheduler", layout="wide")
 
@@ -577,13 +577,28 @@ ENV_OPTIONS = {
     'Sandbox':    ('4e7219c4-fb66-40b5-ab23-0a5c9a32b5b1', 'Sandbox Atom'),
 }
 
-st.sidebar.markdown(f"<div style='font-size:13px;color:#aaa;margin-bottom:4px'>v{VERSION}</div>", unsafe_allow_html=True)
-st.sidebar.markdown("<div style='font-size:13px;font-weight:600;margin-bottom:6px'>Environment</div>", unsafe_allow_html=True)
 st.sidebar.markdown("""
 <style>
-div[data-testid="stRadio"] label { font-size: 15px !important; padding: 4px 0 !important; }
+div[data-testid="stRadio"] label p { font-size: 20px !important; }
+div[data-testid="stRadio"] label { padding: 6px 0 !important; }
+section[data-testid="stSidebar"] > div { padding-bottom: 80px; }
+.sidebar-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 244px;
+    background: #0e1117;
+    border-top: 1px solid #262730;
+    padding: 10px 16px;
+    z-index: 999;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
 </style>
 """, unsafe_allow_html=True)
+
+st.sidebar.markdown("<div style='font-size:13px;font-weight:600;margin-bottom:6px'>Environment</div>", unsafe_allow_html=True)
 
 selected_env = st.sidebar.radio(
     "Environment",
@@ -607,10 +622,16 @@ with st.sidebar.expander("Help & Info"):
 Times shown in MST (UTC-7)
 """)
 
-st.sidebar.write("---")
-if st.sidebar.button('Clear Cache', help="Clear cached API responses"):
+if st.sidebar.button('↺', help="Clear cached API responses", key="clear_cache_btn"):
     clear_cache()
     st.sidebar.success("Cache cleared!")
+
+st.sidebar.markdown(f"""
+<div class="sidebar-footer">
+    <span style="font-size:12px;color:#666">v{VERSION}</span>
+    <span style="font-size:12px;color:#555">Boomi Job Scheduler</span>
+</div>
+""", unsafe_allow_html=True)
 
 if selected_env:
     atom_id, label = ENV_OPTIONS[selected_env]
